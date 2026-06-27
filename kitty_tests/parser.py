@@ -952,6 +952,49 @@ class TestParser(BaseTest):
         e('s==', 'Malformed GraphicsCommand control block, expecting an integer value for key: s')
         e('s=1=', 'Malformed GraphicsCommand control block, expecting a , or semi-colon after a value, found: 0x3d')
 
+    def test_audio_command(self):
+        from base64 import standard_b64encode
+
+        def enc(x):
+            return standard_b64encode(x.encode('utf-8') if isinstance(x, str) else x).decode('ascii')
+
+        def c(**k):
+            for p, v in tuple(k.items()):
+                if isinstance(v, str) and p != 'payload':
+                    k[p] = v.encode('ascii')
+            for f in 'action transmission_type'.split():
+                k.setdefault(f, b'\0')
+            for f in ('id format rate channels more data_sz data_offset timestamp preroll autoplay loop_count playback_state volume seek quiet').split():
+                k.setdefault(f, 0)
+            p = k.pop('payload', '')
+            k[''] = p
+            return ('audio_command', k)
+
+        def t(cmd, **kw):
+            pb('\033_A{};{}\033\\'.format(cmd, enc(kw.get('payload', ''))), c(**kw))
+
+        def e(cmd, err):
+            pb(f'\033_A{cmd}\033\\', (err,))
+
+        s = self.create_screen()
+        pb = partial(self.parse_bytes_dump, s)
+        uint32_max = 2**32 - 1
+        t('i=%d' % uint32_max, id=uint32_max)
+        t('i=3,p=4', id=3, playback_state=4)
+        e('i=%d' % (uint32_max + 1), 'Malformed AudioCommand control block, number is too large')
+        pb('\033_Ai=12\033\\', c(id=12))
+        t('a=t,t=d,s=100,m=0', payload='X', action='t', transmission_type='d', format=100)
+        t('a=t,t=d,s=100,m=0', payload='payload', action='t', transmission_type='d', format=100)
+        t('a=t,t=d,s=100,m=0,q=2', action='t', transmission_type='d', format=100, quiet=2)
+        e(',s=1', 'Malformed AudioCommand control block, invalid key character: 0x2c')
+        e('W=1', 'Malformed AudioCommand control block, invalid key character: 0x57')
+        e('1=1', 'Malformed AudioCommand control block, invalid key character: 0x31')
+        e('a=t,,s=2', 'Malformed AudioCommand control block, invalid key character: 0x2c')
+        e('s', 'Malformed AudioCommand control block, no = after key')
+        e('s=', 'Malformed AudioCommand control block, expecting an integer value')
+        e('s==', 'Malformed AudioCommand control block, expecting an integer value for key: s')
+        e('s=1=', 'Malformed AudioCommand control block, expecting a , or semi-colon after a value, found: 0x3d')
+
     def test_deccara(self):
         s = self.create_screen()
         pb = partial(self.parse_bytes_dump, s)

@@ -8,7 +8,16 @@ static inline void parse_multicell_code(PS *self, uint8_t *parser_buf,
                                         const size_t parser_buf_pos) {
   unsigned int pos = 0;
   size_t payload_start = 0;
-  enum PARSER_STATES { KEY, EQUAL, UINT, INT, FLAG, AFTER_VALUE, PAYLOAD };
+  enum PARSER_STATES {
+    KEY,
+    EQUAL,
+    UINT,
+    INT,
+    FLAG,
+    SKIP,
+    AFTER_VALUE,
+    PAYLOAD
+  };
   enum PARSER_STATES state = KEY, value_state = FLAG;
   MultiCellCommand g = {0};
   unsigned int i, code;
@@ -143,6 +152,15 @@ static inline void parse_multicell_code(PS *self, uint8_t *parser_buf,
       break;
 #undef U
 #undef READ_UINT
+
+    case SKIP:
+      // Skip value until we hit ',' or ';'
+      while (pos < parser_buf_pos && parser_buf[pos] != ',' &&
+             parser_buf[pos] != ';') {
+        pos += 1;
+      }
+      state = AFTER_VALUE;
+      break;
 
     case AFTER_VALUE:
       switch (parser_buf[pos++]) {

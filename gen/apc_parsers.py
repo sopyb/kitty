@@ -18,7 +18,7 @@ KeymapType = dict[str, tuple[str, Union[frozenset[str], str]]]
 def resolve_keys(keymap: KeymapType) -> DefaultDict[str, list[str]]:
     ans: DefaultDict[str, list[str]] = defaultdict(list)
     for ch, (attr, atype) in keymap.items():
-        if isinstance(atype, str) and atype in ('int', 'uint'):
+        if isinstance(atype, str) and atype in ('int', 'uint', 'skip'):
             q = atype
         else:
             q = 'flag'
@@ -40,7 +40,12 @@ def enum(keymap: KeymapType) -> str:
 def parse_key(keymap: KeymapType) -> str:
     lines = []
     for attr, atype in keymap.values():
-        vs = atype.upper() if isinstance(atype, str) and atype in ('uint', 'int') else 'FLAG'
+        if isinstance(atype, str) and atype in ('uint', 'int'):
+            vs = atype.upper()
+        elif isinstance(atype, str) and atype == 'skip':
+            vs = 'SKIP'
+        else:
+            vs = 'FLAG'
         lines.append(f'case {attr}: value_state = {vs}; break;')
     return '        \n'.join(lines)
 
@@ -115,6 +120,7 @@ def generate(
     start_parsing_at: int = 1,
     field_sep: str = ',',
     post_init: str = '',
+    pre_callback: str = '',
 ) -> str:
     type_map = resolve_keys(keymap)
     keys_enum = enum(keymap)
@@ -123,6 +129,7 @@ def generate(
     int_keys, uint_keys = parse_number(keymap)
     report_cmd = cmd_for_report(report_name, keymap, type_map, payload_allowed, payload_is_base64)
     post_init_line = f'\n    {post_init}' if post_init else ''
+    pre_callback_line = f'\n    {pre_callback}' if pre_callback else ''
     extra_init = ''
     if payload_allowed:
         payload_after_value = "case ';': state = PAYLOAD; break;"
@@ -163,7 +170,7 @@ static inline void
 {function_name}(PS *self, uint8_t *parser_buf, const size_t parser_buf_pos) {{
     unsigned int pos = {start_parsing_at};
     {extra_init}
-    enum PARSER_STATES {{ KEY, EQUAL, UINT, INT, FLAG, AFTER_VALUE {payload} }};
+    enum PARSER_STATES {{ KEY, EQUAL, UINT, INT, FLAG, SKIP, AFTER_VALUE {payload} }};
     enum PARSER_STATES state = KEY, value_state = FLAG;
     {command_class} g = {{0}};{post_init_line}
     unsigned int i, code;
@@ -238,6 +245,14 @@ static inline void
 #undef U
 #undef READ_UINT
 
+            case SKIP:
+                // Skip value until we hit ',' or ';'
+                while (pos < parser_buf_pos && parser_buf[pos] != ',' && parser_buf[pos] != ';') {{
+                    pos += 1;
+                }}
+                state = AFTER_VALUE;
+                break;
+
             case AFTER_VALUE:
                 switch (parser_buf[pos++]) {{
                     default:
@@ -270,6 +285,7 @@ static inline void
 
     {report_cmd}
 
+    {pre_callback_line}
     {callback};
 }}
     '''
@@ -346,6 +362,31 @@ def parsers() -> None:
         'parse_dnd_code', 'screen_handle_dnd_command', 'dnd_command', keymap, 'DnDCommand',
         payload_is_base64=False, start_parsing_at=0, field_sep=':')
     write_header(text, 'kitty/parse-dnd-command.h')
+
+    keymap = {
+        'a': ('action', flag('tqpd')),
+        'i': ('id', 'uint'),
+        's': ('format', 'skip'),
+        'r': ('rate', 'uint'),
+        'c': ('channels', 'uint'),
+        'm': ('more', 'uint'),
+        't': ('transmission_type', flag('dtfs')),
+        'S': ('data_sz', 'uint'),
+        'O': ('data_offset', 'uint'),
+        'T': ('timestamp', 'uint'),
+        'B': ('preroll', 'uint'),
+        'P': ('autoplay', 'uint'),
+        'L': ('loop_count', 'uint'),
+        'p': ('playback_state', 'uint'),
+        'v': ('volume', 'uint'),
+        'k': ('seek', 'uint'),
+        'q': ('quiet', 'uint'),
+    }
+    text = generate(
+        'parse_audio_code', 'screen_handle_audio_command', 'audio_command', keymap, 'AudioCommand',
+        payload_is_base64=True, start_parsing_at=1, field_sep=',',
+        pre_callback='audio_extract_format(parser_buf, parser_buf_pos, g.format, sizeof(g.format));')
+    write_header(text, 'kitty/parse-audio-command.h')
 
 
 def main(args: list[str]=sys.argv) -> None:
