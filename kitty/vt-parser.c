@@ -1412,6 +1412,8 @@ dispatch_csi(PS *self) {
 // APC mode {{{
 
 #include "parse-graphics-command.h"
+#include "parse-audio-command.h"
+#include "audio.h"
 
 static void
 dispatch_apc(PS *self, uint8_t *buf, size_t bufsz, bool is_extended UNUSED) {
@@ -1419,6 +1421,9 @@ dispatch_apc(PS *self, uint8_t *buf, size_t bufsz, bool is_extended UNUSED) {
     switch(buf[0]) {
         case 'G':
             parse_graphics_code(self, buf, bufsz);
+            break;
+        case 'A':
+            parse_audio_code(self, buf, bufsz);
             break;
         default:
             REPORT_ERROR("Unrecognized APC code: 0x%x", buf[0]);

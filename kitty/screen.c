@@ -36,6 +36,54 @@
 #include "keys.h"
 #include "vt-parser.h"
 #include "resize.h"
+#include "audio.h"
+
+void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const uint8_t *payload) {
+    if (!self || !self->audio_manager || !cmd) return;
+
+    switch (cmd->action) {
+        case 't': {
+            AudioStream *stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
+            if (!stream) break;
+
+            if (cmd->transmission_type == 'd') {
+                if (payload && cmd->payload_sz) {
+                    audio_stream_append_data(stream, payload, cmd->payload_sz);
+                }
+            }
+
+            if (!cmd->more) {
+                stream->transmission_complete = 1;
+            }
+            break;
+        }
+        case 'p': {
+            AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
+            if (!stream) break;
+
+            if (cmd->playback_state) {
+                stream->state = cmd->playback_state;
+            }
+            if (cmd->volume <= 100) {
+                stream->volume = cmd->volume;
+            }
+            break;
+        }
+        case 'd': {
+            if (cmd->id == 0) {
+                audio_manager_delete_all_streams(self->audio_manager);
+            } else {
+                audio_manager_delete_stream(self->audio_manager, cmd->id);
+            }
+            break;
+        }
+        case 'q': {
+            break;
+        }
+        default:
+            break;
+    }
+}
 
 static const ScreenModes empty_modes = {0, .mDECAWM=true, .mDECTCEM=true, .mDECARM=true};
 
@@ -143,6 +191,7 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         self->historybuf = alloc_historybuf(MAX(scrollback, lines), columns, OPT(scrollback_pager_history_size), self->text_cache);
         self->main_grman = grman_alloc(false);
         self->alt_grman = grman_alloc(false);
+        self->audio_manager = audio_manager_new();
         self->active_hyperlink_id = 0;
 
         self->grman = self->main_grman;
@@ -152,7 +201,7 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         if (
             self->cursor == NULL || self->main_linebuf == NULL || self->alt_linebuf == NULL ||
             self->main_tabstops == NULL || self->historybuf == NULL || self->main_grman == NULL ||
-            self->alt_grman == NULL || self->color_profile == NULL || self->lc == NULL
+            self->alt_grman == NULL || self->color_profile == NULL || self->lc == NULL || self->audio_manager == NULL
         ) {
             Py_CLEAR(self); return NULL;
         }
@@ -683,6 +732,8 @@ dealloc(Screen* self) {
     PyMem_Free(self->main_tabstops);
     Py_CLEAR(self->paused_rendering.linebuf);
     Py_CLEAR(self->paused_rendering.grman);
+    audio_manager_free(self->audio_manager);
+    self->audio_manager = NULL;
     free(self->selections.items);
     free(self->url_ranges.items);
     free(self->paused_rendering.url_ranges.items);

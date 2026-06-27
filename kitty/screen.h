@@ -8,6 +8,7 @@
 
 #include "vt-parser.h"
 #include "graphics.h"
+#include "audio.h"
 #include "monotonic.h"
 #include "line-buf.h"
 #include "history.h"
@@ -132,6 +133,7 @@ typedef struct {
     TextCache *text_cache;
     LineBuf *linebuf, *main_linebuf, *alt_linebuf;
     GraphicsManager *grman, *main_grman, *alt_grman;
+    AudioManager *audio_manager;
     HistoryBuf *historybuf;
     unsigned int history_line_added_count;
     bool *tabstops, *main_tabstops, *alt_tabstops;
@@ -309,6 +311,7 @@ void screen_mark_url(Screen *self, index_type start_x, index_type start_y, index
 void set_active_hyperlink(Screen*, char*, char*);
 hyperlink_id_type screen_mark_hyperlink(Screen*, index_type, index_type);
 void screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const uint8_t *payload);
+void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const uint8_t *payload);
 void screen_handle_multicell_command(Screen *self, const MultiCellCommand *cmd, const uint8_t *payload);
 void screen_handle_dnd_command(Screen *self, const DnDCommand *cmd, const uint8_t *payload);
 bool screen_open_url(Screen* self, const char* callback);
