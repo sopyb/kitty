@@ -14,17 +14,12 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
     UINT,
     INT,
     FLAG,
-    SKIP,
+    STRING,
     AFTER_VALUE,
     PAYLOAD
   };
   enum PARSER_STATES state = KEY, value_state = FLAG;
   AudioCommand g = {0};
-  g.has_preroll = false;
-  g.has_autoplay = false;
-  g.has_loop_count = false;
-  g.has_volume = false;
-  g.has_seek = false;
   unsigned int i, code;
   uint64_t lcode;
   int64_t accumulator;
@@ -69,7 +64,7 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
         value_state = UINT;
         break;
       case format:
-        value_state = SKIP;
+        value_state = STRING;
         break;
       case rate:
         value_state = UINT;
@@ -192,6 +187,7 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
 #define I(x)                                                                   \
   case x:                                                                      \
     g.x = is_negative ? 0 - (int32_t)code : (int32_t)code;                     \
+    g.has_##x = true;                                                          \
     break
       READ_UINT;
       switch (key) {
@@ -207,71 +203,23 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
 #define U(x)                                                                   \
   case x:                                                                      \
     g.x = code;                                                                \
+    g.has_##x = true;                                                          \
     break
       switch (key) {
-      case id:
-        g.id = code;
-        g.has_id = true;
-        break;
-        ;
-      case rate:
-        g.rate = code;
-        break;
-        ;
-      case channels:
-        g.channels = code;
-        break;
-        ;
-      case more:
-        g.more = code;
-        break;
-        ;
-      case data_sz:
-        g.data_sz = code;
-        break;
-        ;
-      case data_offset:
-        g.data_offset = code;
-        break;
-        ;
-      case timestamp:
-        g.timestamp = code;
-        break;
-        ;
-      case preroll:
-        g.preroll = code;
-        g.has_preroll = true;
-        break;
-        ;
-      case autoplay:
-        g.autoplay = code;
-        g.has_autoplay = true;
-        break;
-        ;
-      case loop_count:
-        g.loop_count = code;
-        g.has_loop_count = true;
-        break;
-        ;
-      case playback_state:
-        g.playback_state = code;
-        g.has_playback_state = true;
-        break;
-        ;
-      case volume:
-        g.volume = code;
-        g.has_volume = true;
-        break;
-        ;
-      case seek:
-        g.seek = code;
-        g.has_seek = true;
-        break;
-        ;
-      case quiet:
-        g.quiet = code;
-        break;
-        ;
+        U(id);
+        U(rate);
+        U(channels);
+        U(more);
+        U(data_sz);
+        U(data_offset);
+        U(timestamp);
+        U(preroll);
+        U(autoplay);
+        U(loop_count);
+        U(playback_state);
+        U(volume);
+        U(seek);
+        U(quiet);
       default:
         break;
       }
@@ -280,12 +228,34 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
 #undef U
 #undef READ_UINT
 
-    case SKIP:
-      // Skip value until we hit ',' or ';'
+    case STRING: {
+      size_t out_pos = 0;
       while (pos < parser_buf_pos && parser_buf[pos] != ',' &&
              parser_buf[pos] != ';') {
+#define S(x)                                                                   \
+  case x:                                                                      \
+    if (out_pos < sizeof(g.x) - 1)                                             \
+      g.x[out_pos++] = parser_buf[pos];                                        \
+    break
+        switch (key) {
+          S(format);
+        default:
+          break;
+        }
+#undef S
         pos += 1;
       }
+#define S(x)                                                                   \
+  case x:                                                                      \
+    g.x[out_pos] = '\0';                                                       \
+    break
+      switch (key) {
+        S(format);
+      default:
+        break;
+      }
+#undef S
+    }
       state = AFTER_VALUE;
       break;
 
@@ -311,18 +281,20 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
         g.payload_sz = MAX(BUF_EXTRA, sz);
         if (!base64_decode8(parser_buf + pos, sz, parser_buf, &g.payload_sz)) {
           g.payload_sz = MAX(BUF_EXTRA, sz);
-          REPORT_ERROR("Failed to parse AudioCommand command payload with "
-                       "error:     invalid base64 data in chunk of size: %zu "
-                       "with output buffer size: %zu",
-                       sz, g.payload_sz);
+          REPORT_ERROR(
+              "Failed to parse AudioCommand command payload with error: "
+              "invalid base64 data in chunk of size: %zu with output buffer "
+              "size: %zu",
+              sz, g.payload_sz);
           return;
         }
+        pos = parser_buf_pos;
         payload_start = 0;
       } else {
         payload_start = pos;
         g.payload_sz = sz;
+        pos = parser_buf_pos;
       }
-      pos = parser_buf_pos;
     } break;
 
     } // end switch
@@ -360,8 +332,7 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
       (unsigned int)g.playback_state, "volume", (unsigned int)g.volume, "seek",
       (unsigned int)g.seek, "quiet", (unsigned int)g.quiet,
 
-      "", (char *)parser_buf + payload_start, g.payload_sz);
+      "", (char *)parser_buf, g.payload_sz);
 
-  audio_extract_format(parser_buf, parser_buf_pos, g.format, sizeof(g.format));
   screen_handle_audio_command(self->screen, &g, parser_buf + payload_start);
 }

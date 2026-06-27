@@ -18,7 +18,7 @@ KeymapType = dict[str, tuple[str, Union[frozenset[str], str]]]
 def resolve_keys(keymap: KeymapType) -> DefaultDict[str, list[str]]:
     ans: DefaultDict[str, list[str]] = defaultdict(list)
     for ch, (attr, atype) in keymap.items():
-        if isinstance(atype, str) and atype in ('int', 'uint', 'skip'):
+        if isinstance(atype, str) and atype in ('int', 'uint', 'string'):
             q = atype
         else:
             q = 'flag'
@@ -42,8 +42,8 @@ def parse_key(keymap: KeymapType) -> str:
     for attr, atype in keymap.values():
         if isinstance(atype, str) and atype in ('uint', 'int'):
             vs = atype.upper()
-        elif isinstance(atype, str) and atype == 'skip':
-            vs = 'SKIP'
+        elif isinstance(atype, str) and atype == 'string':
+            vs = 'STRING'
         else:
             vs = 'FLAG'
         lines.append(f'case {attr}: value_state = {vs}; break;')
@@ -68,10 +68,11 @@ def parse_flag(keymap: KeymapType, type_map: dict[str, Any], command_class: str)
     return '        \n'.join(lines)
 
 
-def parse_number(keymap: KeymapType) -> tuple[str, str]:
+def parse_number(keymap: KeymapType) -> tuple[str, str, str]:
     int_keys = [f'I({attr})' for attr, atype in keymap.values() if atype == 'int']
     uint_keys = [f'U({attr})' for attr, atype in keymap.values() if atype == 'uint']
-    return '; '.join(int_keys), '; '.join(uint_keys)
+    string_keys = [f'S({attr})' for attr, atype in keymap.values() if atype == 'string']
+    return '; '.join(int_keys), '; '.join(uint_keys), '; '.join(string_keys)
 
 
 def cmd_for_report(report_name: str, keymap: KeymapType, type_map: dict[str, Any], payload_allowed: bool, payload_is_base64: bool) -> str:
@@ -116,17 +117,18 @@ def generate(
     command_class: str,
     initial_key: str = 'a',
     payload_allowed: bool = True,
-    payload_is_base64: bool = True,
+    payload_is_base64: str | bool = True,
     start_parsing_at: int = 1,
     field_sep: str = ',',
     post_init: str = '',
     pre_callback: str = '',
+    generate_has_flags: bool = False,
 ) -> str:
     type_map = resolve_keys(keymap)
     keys_enum = enum(keymap)
     handle_key = parse_key(keymap)
     flag_keys = parse_flag(keymap, type_map, command_class)
-    int_keys, uint_keys = parse_number(keymap)
+    int_keys, uint_keys, string_keys = parse_number(keymap)
     report_cmd = cmd_for_report(report_name, keymap, type_map, payload_allowed, payload_is_base64)
     post_init_line = f'\n    {post_init}' if post_init else ''
     pre_callback_line = f'\n    {pre_callback}' if pre_callback else ''
@@ -134,19 +136,40 @@ def generate(
     if payload_allowed:
         payload_after_value = "case ';': state = PAYLOAD; break;"
         payload = ', PAYLOAD'
-        if payload_is_base64:
+        if payload_is_base64 is True:
             payload_case = f'''
                 case PAYLOAD: {{
                     sz = parser_buf_pos - pos;
                     g.payload_sz = MAX(BUF_EXTRA, sz);
                     if (!base64_decode8(parser_buf + pos, sz, parser_buf, &g.payload_sz)) {{
                         g.payload_sz = MAX(BUF_EXTRA, sz);
-                        REPORT_ERROR("Failed to parse {command_class} command payload with error: \
-    invalid base64 data in chunk of size: %zu with output buffer size: %zu", sz, g.payload_sz); return; }}
+                        REPORT_ERROR("Failed to parse {command_class} command payload with error: "
+                                     "invalid base64 data in chunk of size: %zu with output buffer size: %zu", sz, g.payload_sz); return; }}
                     pos = parser_buf_pos;
                     }} break;
             '''
             callback = f'{callback_name}(self->screen, &g, parser_buf)'
+        elif payload_is_base64 == 'conditional':
+            payload_case = f"""
+                case PAYLOAD: {{
+                    sz = parser_buf_pos - pos;
+                    if (g.transmission_type == 'd' || g.transmission_type == 0) {{
+                        g.payload_sz = MAX(BUF_EXTRA, sz);
+                        if (!base64_decode8(parser_buf + pos, sz, parser_buf, &g.payload_sz)) {{
+                            g.payload_sz = MAX(BUF_EXTRA, sz);
+                            REPORT_ERROR("Failed to parse {command_class} command payload with error: "
+                                         "invalid base64 data in chunk of size: %zu with output buffer size: %zu", sz, g.payload_sz); return; }}
+                        pos = parser_buf_pos;
+                        payload_start = 0;
+                    }} else {{
+                        payload_start = pos;
+                        g.payload_sz = sz;
+                        pos = parser_buf_pos;
+                    }}
+                    }} break;
+            """
+            extra_init = 'size_t payload_start = 0;'
+            callback = f'{callback_name}(self->screen, &g, parser_buf + payload_start)'
         else:
             payload_case = '''
                 case PAYLOAD: {
@@ -163,6 +186,36 @@ def generate(
         payload_after_value = payload = payload_case = ''
         callback = f'{callback_name}(self->screen, &g)'
 
+    
+    if string_keys:
+        string_case = f"""
+            case STRING:
+                {{
+                    size_t out_pos = 0;
+                    while (pos < parser_buf_pos && parser_buf[pos] != ',' && parser_buf[pos] != ';') {{
+#define S(x) case x: if (out_pos < sizeof(g.x) - 1) g.x[out_pos++] = parser_buf[pos]; break
+                        switch(key) {{
+                            {string_keys};
+                            default: break;
+                        }}
+#undef S
+                        pos += 1;
+                    }}
+#define S(x) case x: g.x[out_pos] = '\\0'; break
+                    switch(key) {{
+                        {string_keys};
+                        default: break;
+                    }}
+#undef S
+                }}
+                state = AFTER_VALUE;
+                break;
+        """
+        enum_string_state = 'STRING, '
+    else:
+        string_case = ""
+        enum_string_state = ""
+
     return f'''
     #include "base64.h"
 
@@ -170,7 +223,7 @@ static inline void
 {function_name}(PS *self, uint8_t *parser_buf, const size_t parser_buf_pos) {{
     unsigned int pos = {start_parsing_at};
     {extra_init}
-    enum PARSER_STATES {{ KEY, EQUAL, UINT, INT, FLAG, SKIP, AFTER_VALUE {payload} }};
+    enum PARSER_STATES {{ KEY, EQUAL, UINT, INT, FLAG, {enum_string_state}AFTER_VALUE {payload} }};
     enum PARSER_STATES state = KEY, value_state = FLAG;
     {command_class} g = {{0}};{post_init_line}
     unsigned int i, code;
@@ -224,7 +277,7 @@ static inline void
 
                 is_negative = false;
                 if(parser_buf[pos] == '-') {{ is_negative = true; pos++; }}
-#define I(x) case x: g.x = is_negative ? 0 - (int32_t)code : (int32_t)code; break
+#define I(x) case x: g.x = is_negative ? 0 - (int32_t)code : (int32_t)code; {'g.has_##x = true;' if generate_has_flags else ''} break
                 READ_UINT;
                 switch(key) {{
                     {int_keys};
@@ -235,7 +288,7 @@ static inline void
 #undef I
             case UINT:
                 READ_UINT;
-#define U(x) case x: g.x = code; break
+#define U(x) case x: g.x = code; {'g.has_##x = true;' if generate_has_flags else ''} break
                 switch(key) {{
                     {uint_keys};
                     default: break;
@@ -245,13 +298,7 @@ static inline void
 #undef U
 #undef READ_UINT
 
-            case SKIP:
-                // Skip value until we hit ',' or ';'
-                while (pos < parser_buf_pos && parser_buf[pos] != ',' && parser_buf[pos] != ';') {{
-                    pos += 1;
-                }}
-                state = AFTER_VALUE;
-                break;
+            {string_case}
 
             case AFTER_VALUE:
                 switch (parser_buf[pos++]) {{
@@ -366,7 +413,7 @@ def parsers() -> None:
     keymap = {
         'a': ('action', flag('tqpd')),
         'i': ('id', 'uint'),
-        's': ('format', 'skip'),
+        's': ('format', 'string'),
         'r': ('rate', 'uint'),
         'c': ('channels', 'uint'),
         'm': ('more', 'uint'),
@@ -384,8 +431,8 @@ def parsers() -> None:
     }
     text = generate(
         'parse_audio_code', 'screen_handle_audio_command', 'audio_command', keymap, 'AudioCommand',
-        payload_is_base64=True, start_parsing_at=1, field_sep=',',
-        pre_callback='audio_extract_format(parser_buf, parser_buf_pos, g.format, sizeof(g.format));')
+        payload_is_base64='conditional', start_parsing_at=1, field_sep=',',
+        pre_callback='', generate_has_flags=True)
     write_header(text, 'kitty/parse-audio-command.h')
 
 

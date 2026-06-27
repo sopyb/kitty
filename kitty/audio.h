@@ -21,6 +21,12 @@ typedef struct AudioCommand {
   uint32_t volume;
   uint32_t seek;
   uint32_t quiet;
+  bool has_rate;
+  bool has_channels;
+  bool has_more;
+  bool has_data_sz;
+  bool has_data_offset;
+  bool has_timestamp;
   bool has_preroll;
   bool has_autoplay;
   bool has_loop_count;
@@ -28,37 +34,11 @@ typedef struct AudioCommand {
   bool has_seek;
   bool has_playback_state;
   bool has_id;
+  bool has_quiet;
   size_t payload_sz;
 } AudioCommand;
 
-// Extract format string from control block buffer (e.g., finds s=raw/s16le)
-static inline void audio_extract_format(const uint8_t *buf, size_t bufsz,
-                                        char *format_out,
-                                        size_t format_out_sz) {
-  memset(format_out, 0, format_out_sz);
-  if (!buf || bufsz < 3)
-    return;
 
-  size_t pos = 1; // skip first byte (A discriminator)
-  while (pos < bufsz) {
-    if (buf[pos] == ';') break;
-    // Look for 's='
-    if (buf[pos] == 's' && pos + 1 < bufsz && buf[pos + 1] == '=') {
-      pos += 2; // skip 's='
-      size_t out_pos = 0;
-      // Copy format string until we hit ',' or ';'
-      while (pos < bufsz && out_pos < format_out_sz - 1) {
-        if (buf[pos] == ',' || buf[pos] == ';') {
-          break;
-        }
-        format_out[out_pos++] = buf[pos++];
-      }
-      format_out[out_pos] = '\0';
-      return;
-    }
-    pos++;
-  }
-}
 
 #include "audio_stream.h"
 #include "audio_transport.h"
