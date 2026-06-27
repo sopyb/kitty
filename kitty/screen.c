@@ -1638,14 +1638,52 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                 audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid stream id 0", cmd->quiet);
                 break;
             }
-            AudioStream *stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
+            if (!cmd->has_more) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing m key", cmd->quiet);
+                break;
+            }
+            AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
+            bool is_new_stream = false;
+            if (stream) {
+                if (stream->transmission_complete) {
+                    audio_manager_delete_stream(self->audio_manager, cmd->id);
+                    stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
+                    is_new_stream = true;
+                } else if (cmd->rate || cmd->channels || cmd->format[0]) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Cannot change format of incomplete stream", cmd->quiet);
+                    break;
+                }
+            } else {
+                stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
+                is_new_stream = true;
+            }
             if (!stream) {
                 audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_ENOSPC, "Failed to create stream", cmd->quiet);
                 break;
             }
+            if (is_new_stream) {
+                if (!cmd->rate || !cmd->channels || !cmd->format[0]) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing format metadata on new stream", cmd->quiet);
+                    break;
+                }
+            }
 
-            if (cmd->rate) stream->rate = cmd->rate;
-            if (cmd->channels) stream->channels = cmd->channels;
+            if (cmd->rate) {
+                if (cmd->rate != 44100 && cmd->rate != 48000) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "sample rate %u not supported", cmd->rate);
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, msg, cmd->quiet);
+                    break;
+                }
+                stream->rate = cmd->rate;
+            }
+            if (cmd->channels) {
+                if (cmd->channels != 1 && cmd->channels != 2) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported channel count", cmd->quiet);
+                    break;
+                }
+                stream->channels = cmd->channels;
+            }
             if (cmd->format[0]) {
                 if (!audio_stream_set_format(stream, cmd->format)) {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported format or container", cmd->quiet);
@@ -1685,7 +1723,7 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                         free(tr.data);
                         audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
                     } else {
-                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Failed to read transport", cmd->quiet);
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EIO, "Failed to read transport", cmd->quiet);
                     }
                 } else {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing path in payload", cmd->quiet);
@@ -1741,7 +1779,9 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                     size_t target_offset = target_frames * frame_size;
                     pthread_mutex_lock(&stream->data_lock);
                     if (target_offset > stream->data_written) {
-                        target_offset = stream->data_written;
+                        pthread_mutex_unlock(&stream->data_lock);
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "seek target beyond received data", cmd->quiet);
+                        break;
                     }
                     stream->playback_offset = target_offset;
                     stream->flush_playback = true;
