@@ -1,7 +1,7 @@
+#include "data-types.h"
 #include "audio_output.h"
 #include "audio_backend.h"
 #include "audio_stream.h"
-#include "data-types.h"
 
 bool audio_output_start(AudioStream *stream) {
   if (!stream || stream->playback_active)

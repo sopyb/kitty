@@ -27,6 +27,7 @@ typedef struct AudioCommand {
   bool has_volume;
   bool has_seek;
   bool has_playback_state;
+  bool has_id;
   size_t payload_sz;
 } AudioCommand;
 
@@ -40,6 +41,7 @@ static inline void audio_extract_format(const uint8_t *buf, size_t bufsz,
 
   size_t pos = 1; // skip first byte (A discriminator)
   while (pos < bufsz) {
+    if (buf[pos] == ';') break;
     // Look for 's='
     if (buf[pos] == 's' && pos + 1 < bufsz && buf[pos + 1] == '=') {
       pos += 2; // skip 's='

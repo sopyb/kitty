@@ -54,6 +54,7 @@ typedef struct AudioStream {
   pthread_mutex_t data_lock;
   pthread_cond_t data_ready;
   size_t playback_offset;
+  bool flush_playback;
 } AudioStream;
 
 typedef struct {

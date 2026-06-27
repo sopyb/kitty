@@ -58,7 +58,7 @@ void audio_send_capability_response(Screen *self, uint32_t id, uint8_t quiet) {
 
   char response[512];
   int len = snprintf(response, sizeof(response),
-                     "Aa=q,i=%u;OK;V=1,r=44100|48000,c=1|2,s=raw/s16le", id);
+                     "Aa=q,i=%u;OK;V=1,M=1,r=44100|48000,c=1|2,s=raw/s16le", id);
 
   if (len > 0 && len < (int)sizeof(response)) {
     write_escape_code_to_child(self, ESC_APC, response);

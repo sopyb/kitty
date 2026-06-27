@@ -1,7 +1,7 @@
+#include "data-types.h"
 #include "audio_backend.h"
 #include "audio_output.h"
 #include "audio_stream.h"
-#include "data-types.h"
 #include <limits.h>
 #include <string.h>
 
@@ -210,7 +210,18 @@ static void *audio_playback_thread(void *arg) {
   max_chunk -= max_chunk % frame_size;
 
   while (!stream->playback_stop) {
+    bool do_flush = false;
     pthread_mutex_lock(&stream->data_lock);
+    if (stream->flush_playback) {
+      do_flush = true;
+      stream->flush_playback = false;
+    }
+    if (do_flush) {
+      pthread_mutex_unlock(&stream->data_lock);
+      snd_pcm_drop(handle);
+      snd_pcm_prepare(handle);
+      continue;
+    }
     while (!stream->playback_stop && stream->playback_paused) {
       stream->state = AUDIO_STATE_PAUSED;
       pthread_cond_wait(&stream->data_ready, &stream->data_lock);

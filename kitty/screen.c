@@ -37,53 +37,9 @@
 #include "vt-parser.h"
 #include "resize.h"
 #include "audio.h"
+#include "audio_response.h"
+#include "audio_output.h"
 
-void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const uint8_t *payload) {
-    if (!self || !self->audio_manager || !cmd) return;
-
-    switch (cmd->action) {
-        case 't': {
-            AudioStream *stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
-            if (!stream) break;
-
-            if (cmd->transmission_type == 'd') {
-                if (payload && cmd->payload_sz) {
-                    audio_stream_append_data(stream, payload, cmd->payload_sz);
-                }
-            }
-
-            if (!cmd->more) {
-                stream->transmission_complete = 1;
-            }
-            break;
-        }
-        case 'p': {
-            AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
-            if (!stream) break;
-
-            if (cmd->playback_state) {
-                stream->state = cmd->playback_state;
-            }
-            if (cmd->volume <= 100) {
-                stream->volume = cmd->volume;
-            }
-            break;
-        }
-        case 'd': {
-            if (cmd->id == 0) {
-                audio_manager_delete_all_streams(self->audio_manager);
-            } else {
-                audio_manager_delete_stream(self->audio_manager, cmd->id);
-            }
-            break;
-        }
-        case 'q': {
-            break;
-        }
-        default:
-            break;
-    }
-}
 
 static const ScreenModes empty_modes = {0, .mDECAWM=true, .mDECTCEM=true, .mDECARM=true};
 
@@ -1667,6 +1623,202 @@ screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const u
     }
 }
 // }}}
+
+// Audio {{{
+void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const uint8_t *payload) {
+    if (!self || !self->audio_manager || !cmd) return;
+
+    switch (cmd->action) {
+        case 't': {
+            if (!cmd->has_id) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing stream id", cmd->quiet);
+                break;
+            }
+            if (cmd->id == 0) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid stream id 0", cmd->quiet);
+                break;
+            }
+            AudioStream *stream = audio_manager_get_or_create_stream(self->audio_manager, cmd->id);
+            if (!stream) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_ENOSPC, "Failed to create stream", cmd->quiet);
+                break;
+            }
+
+            if (cmd->rate) stream->rate = cmd->rate;
+            if (cmd->channels) stream->channels = cmd->channels;
+            if (cmd->format[0]) {
+                AudioFormat fmt;
+                if (audio_format_from_string(cmd->format, &fmt)) {
+                    stream->format = fmt;
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported format", cmd->quiet);
+                    break;
+                }
+            }
+            if (cmd->has_autoplay) stream->autoplay = cmd->autoplay;
+            if (cmd->has_loop_count) stream->loop_count = cmd->loop_count;
+            if (cmd->has_volume && cmd->volume <= 100) stream->volume = cmd->volume;
+
+            if (cmd->transmission_type == 'd' || cmd->transmission_type == 0) {
+                if (!payload || cmd->payload_sz == 0) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing payload", cmd->quiet);
+                } else {
+                    audio_stream_append_data(stream, payload, cmd->payload_sz);
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+                }
+            } else if (cmd->transmission_type == 't' || cmd->transmission_type == 'f' || cmd->transmission_type == 's') {
+                if (payload && cmd->payload_sz > 0) {
+                    char path[1024];
+                    size_t len = cmd->payload_sz < sizeof(path) - 1 ? cmd->payload_sz : sizeof(path) - 1;
+                    memcpy(path, payload, len);
+                    path[len] = '\0';
+
+                    AudioTransportResult tr = {0};
+                    int rc = -1;
+                    if (cmd->transmission_type == 't') {
+                        rc = audio_transport_load_temp_file(path, cmd->data_offset, cmd->data_sz, &tr);
+                    } else if (cmd->transmission_type == 'f') {
+                        rc = audio_transport_load_file(path, cmd->data_offset, cmd->data_sz, &tr);
+                    } else if (cmd->transmission_type == 's') {
+                        rc = audio_transport_load_sharedmem(path, cmd->data_offset, cmd->data_sz, &tr);
+                    }
+
+                    if (rc == 0 && tr.data) {
+                        audio_stream_append_data(stream, tr.data, tr.size);
+                        free(tr.data);
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+                    } else {
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Failed to read transport", cmd->quiet);
+                    }
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing path in payload", cmd->quiet);
+                }
+            } else {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid transmission type", cmd->quiet);
+            }
+
+            if (!cmd->more) {
+                stream->transmission_complete = 1;
+                audio_stream_mark_complete(stream);
+            }
+
+            if (stream->autoplay && stream->state == AUDIO_STATE_STOPPED && stream->data_written > 0) {
+                for (size_t i = 0; i < self->audio_manager->stream_count; i++) {
+                    AudioStream *other = &self->audio_manager->streams[i];
+                    if (other->id != stream->id && other->state == AUDIO_STATE_PLAYING) {
+                        audio_output_pause(other);
+                    }
+                }
+                audio_output_start(stream);
+            }
+            break;
+        }
+        case 'p': {
+            if (!cmd->has_id) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing stream id", cmd->quiet);
+                break;
+            }
+            if (cmd->id == 0) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid stream id 0", cmd->quiet);
+                break;
+            }
+            AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
+            if (!stream) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_ENOENT, "Stream not found", cmd->quiet);
+                break;
+            }
+
+            if (cmd->has_volume && cmd->volume <= 100) {
+                stream->volume = cmd->volume;
+            }
+
+            if (cmd->has_loop_count) {
+                stream->loop_count = cmd->loop_count;
+            }
+
+            if (cmd->has_seek) {
+                size_t bytes_per_sample = audio_format_bytes_per_sample(stream->format);
+                if (bytes_per_sample > 0 && stream->rate > 0) {
+                    uint64_t frame_size = (uint64_t)bytes_per_sample * stream->channels;
+                    uint64_t target_frames = ((uint64_t)cmd->seek * (uint64_t)stream->rate) / 1000ULL;
+                    size_t target_offset = target_frames * frame_size;
+                    pthread_mutex_lock(&stream->data_lock);
+                    if (target_offset > stream->data_written) {
+                        target_offset = stream->data_written;
+                    }
+                    stream->playback_offset = target_offset;
+                    stream->flush_playback = true;
+                    pthread_mutex_unlock(&stream->data_lock);
+                }
+            }
+
+            if (cmd->has_playback_state) {
+                if (cmd->playback_state == AUDIO_STATE_PLAYING) {
+                    for (size_t i = 0; i < self->audio_manager->stream_count; i++) {
+                        AudioStream *other = &self->audio_manager->streams[i];
+                        if (other->id != stream->id && other->state == AUDIO_STATE_PLAYING) {
+                            audio_output_pause(other);
+                        }
+                    }
+                    if (stream->state == AUDIO_STATE_PAUSED) {
+                        audio_output_resume(stream);
+                    } else if (stream->state == AUDIO_STATE_STOPPED) {
+                        audio_output_start(stream);
+                    }
+                } else if (cmd->playback_state == AUDIO_STATE_PAUSED) {
+                    if (stream->state == AUDIO_STATE_PLAYING) {
+                        audio_output_pause(stream);
+                    } else if (stream->state == AUDIO_STATE_STOPPED) {
+                        stream->state = AUDIO_STATE_PAUSED;
+                    }
+                } else if (cmd->playback_state == AUDIO_STATE_STOPPED) {
+                    if (stream->state == AUDIO_STATE_PLAYING || stream->state == AUDIO_STATE_PAUSED) {
+                        audio_output_stop(stream);
+                    }
+                }
+            }
+            audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+            break;
+        }
+        case 'd': {
+            if (!cmd->has_id) {
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing stream id", cmd->quiet);
+                break;
+            }
+            if (cmd->id == 0) {
+                audio_manager_delete_all_streams(self->audio_manager);
+                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+            } else {
+                AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
+                if (stream) {
+                    audio_manager_delete_stream(self->audio_manager, cmd->id);
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_ENOENT, "Stream not found", cmd->quiet);
+                }
+            }
+            break;
+        }
+        case 'q': {
+            if (cmd->id == 0) {
+                audio_send_capability_response(self, cmd->id, cmd->quiet);
+            } else {
+                AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
+                if (stream) {
+                    audio_send_stream_state_response(self, stream, cmd->id, cmd->quiet);
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_ENOENT, "Stream not found", cmd->quiet);
+                }
+            }
+            break;
+        }
+        default:
+            audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Unknown action", cmd->quiet);
+            break;
+    }
+}
+
+//}}}
 
 // Modes {{{
 

@@ -211,6 +211,7 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
       switch (key) {
       case id:
         g.id = code;
+        g.has_id = true;
         break;
         ;
       case rate:
@@ -306,8 +307,21 @@ static inline void parse_audio_code(PS *self, uint8_t *parser_buf,
 
     case PAYLOAD: {
       sz = parser_buf_pos - pos;
-      payload_start = pos;
-      g.payload_sz = sz;
+      if (g.transmission_type == 'd' || g.transmission_type == 0) {
+        g.payload_sz = MAX(BUF_EXTRA, sz);
+        if (!base64_decode8(parser_buf + pos, sz, parser_buf, &g.payload_sz)) {
+          g.payload_sz = MAX(BUF_EXTRA, sz);
+          REPORT_ERROR("Failed to parse AudioCommand command payload with "
+                       "error:     invalid base64 data in chunk of size: %zu "
+                       "with output buffer size: %zu",
+                       sz, g.payload_sz);
+          return;
+        }
+        payload_start = 0;
+      } else {
+        payload_start = pos;
+        g.payload_sz = sz;
+      }
       pos = parser_buf_pos;
     } break;
 
