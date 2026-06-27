@@ -1,6 +1,7 @@
 #include "audio_response.h"
 #include "audio_stream.h"
 #include "control-codes.h"
+#include "screen.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -23,9 +24,10 @@ static const char *audio_response_code_to_string(AudioResponseCode code) {
   }
 }
 
-void audio_send_response(Screen *self, uint8_t action, uint32_t id,
+void audio_send_response(void *self_ptr, uint8_t action, uint32_t id,
                          AudioResponseCode code, const char *message,
                          uint8_t quiet) {
+  Screen *self = (Screen *)self_ptr;
   if (!self || !self->callbacks)
     return;
 
@@ -37,11 +39,12 @@ void audio_send_response(Screen *self, uint8_t action, uint32_t id,
   char response[512];
   int len = 0;
 
+  uint8_t disp_action = action ? action : '?';
   if (message && strlen(message) > 0) {
-    len = snprintf(response, sizeof(response), "Aa=%c,i=%u;%s:%s", action, id,
+    len = snprintf(response, sizeof(response), "Aa=%c,i=%u;%s:%s", disp_action, id,
                    code_str, message);
   } else {
-    len = snprintf(response, sizeof(response), "Aa=%c,i=%u;%s", action, id,
+    len = snprintf(response, sizeof(response), "Aa=%c,i=%u;%s", disp_action, id,
                    code_str);
   }
 
@@ -51,7 +54,8 @@ void audio_send_response(Screen *self, uint8_t action, uint32_t id,
 }
 
 // TODO: Auto generate capability string
-void audio_send_capability_response(Screen *self, uint32_t id, uint8_t quiet) {
+void audio_send_capability_response(void *self_ptr, uint32_t id, uint8_t quiet) {
+  Screen *self = (Screen *)self_ptr;
   if (!self || !self->callbacks)
     return;
   if (quiet == 1 || quiet == 2)
@@ -88,8 +92,9 @@ static uint64_t audio_stream_duration_ms(const AudioStream *stream) {
   return (frames * 1000ULL) / stream->rate;
 }
 
-void audio_send_stream_state_response(Screen *self, const AudioStream *stream,
+void audio_send_stream_state_response(void *self_ptr, const AudioStream *stream,
                                       uint32_t id, uint8_t quiet) {
+  Screen *self = (Screen *)self_ptr;
   if (!self || !self->callbacks || !stream)
     return;
   if (quiet == 1 || quiet == 2)

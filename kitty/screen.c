@@ -1638,9 +1638,20 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                 audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid stream id 0", cmd->quiet);
                 break;
             }
-            if (!cmd->has_more) {
-                audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing m key", cmd->quiet);
-                break;
+            bool has_more = cmd->has_more;
+            uint32_t more = cmd->more;
+            if (cmd->transmission_type == 't') {
+                if (has_more && more) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Temp files cannot be multi-chunk", cmd->quiet);
+                    break;
+                }
+                has_more = true;
+                more = 0;
+            } else {
+                if (!has_more) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing m key", cmd->quiet);
+                    break;
+                }
             }
             AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);
             bool is_new_stream = false;
@@ -1664,7 +1675,7 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
             if (is_new_stream) {
                 if (!cmd->rate || !cmd->channels || !cmd->format[0]) {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing format metadata on new stream", cmd->quiet);
-                    break;
+                    goto t_error;
                 }
             }
 
@@ -1673,30 +1684,40 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                     char msg[64];
                     snprintf(msg, sizeof(msg), "sample rate %u not supported", cmd->rate);
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, msg, cmd->quiet);
-                    break;
+                    goto t_error;
                 }
                 stream->rate = cmd->rate;
             }
             if (cmd->channels) {
                 if (cmd->channels != 1 && cmd->channels != 2) {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported channel count", cmd->quiet);
-                    break;
+                    goto t_error;
                 }
                 stream->channels = cmd->channels;
             }
             if (cmd->format[0]) {
                 if (!audio_stream_set_format(stream, cmd->format)) {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported format or container", cmd->quiet);
-                    break;
+                    goto t_error;
                 }
             }
             if (cmd->has_autoplay) stream->autoplay = cmd->autoplay;
             if (cmd->has_loop_count) stream->loop_count = cmd->loop_count;
-            if (cmd->has_volume && cmd->volume <= 100) stream->volume = cmd->volume;
+            if (cmd->has_volume) {
+                if (cmd->volume > 100) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Volume out of range", cmd->quiet);
+                    goto t_error;
+                }
+                stream->volume = cmd->volume;
+            }
 
             if (cmd->transmission_type == 'd' || cmd->transmission_type == 0) {
                 if (!payload || cmd->payload_sz == 0) {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing payload", cmd->quiet);
+                    goto t_error;
+                } else if (more && (cmd->payload_sz % 3) != 0) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Intermediate base64 chunks cannot be padded", cmd->quiet);
+                    goto t_error;
                 } else {
                     audio_stream_append_data(stream, payload, cmd->payload_sz);
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
@@ -1709,7 +1730,7 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                     path[len] = '\0';
 
                     AudioTransportResult tr = {0};
-                    int rc = -1;
+                    AudioResponseCode rc = AUDIO_RESPONSE_EIO;
                     if (cmd->transmission_type == 't') {
                         rc = audio_transport_load_temp_file(path, cmd->data_offset, cmd->data_sz, &tr);
                     } else if (cmd->transmission_type == 'f') {
@@ -1718,21 +1739,27 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                         rc = audio_transport_load_sharedmem(path, cmd->data_offset, cmd->data_sz, &tr);
                     }
 
-                    if (rc == 0 && tr.data) {
+                    if (rc == AUDIO_RESPONSE_OK && tr.data) {
                         audio_stream_append_data(stream, tr.data, tr.size);
                         free(tr.data);
                         audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+                    } else if (rc == AUDIO_RESPONSE_EINVAL) {
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid transport path", cmd->quiet);
+                        goto t_error;
                     } else {
                         audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EIO, "Failed to read transport", cmd->quiet);
+                        goto t_error;
                     }
                 } else {
                     audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing path in payload", cmd->quiet);
+                    goto t_error;
                 }
             } else {
                 audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid transmission type", cmd->quiet);
+                goto t_error;
             }
 
-            if (!cmd->more) {
+            if (!more) {
                 stream->transmission_complete = 1;
                 audio_stream_mark_complete(stream);
             }
@@ -1745,6 +1772,11 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                     }
                 }
                 audio_output_start(stream);
+            }
+            break;
+        t_error:
+            if (is_new_stream) {
+                audio_manager_delete_stream(self->audio_manager, cmd->id);
             }
             break;
         }
@@ -1763,7 +1795,11 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                 break;
             }
 
-            if (cmd->has_volume && cmd->volume <= 100) {
+            if (cmd->has_volume) {
+                if (cmd->volume > 100) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Volume out of range", cmd->quiet);
+                    break;
+                }
                 stream->volume = cmd->volume;
             }
 
@@ -1773,10 +1809,21 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
 
             if (cmd->has_seek) {
                 size_t bytes_per_sample = audio_format_bytes_per_sample(stream->format);
+                uint64_t target_offset = 0;
+                bool valid_seek = false;
+                
                 if (bytes_per_sample > 0 && stream->rate > 0) {
                     uint64_t frame_size = (uint64_t)bytes_per_sample * stream->channels;
                     uint64_t target_frames = ((uint64_t)cmd->seek * (uint64_t)stream->rate) / 1000ULL;
-                    size_t target_offset = target_frames * frame_size;
+                    target_offset = target_frames * frame_size;
+                    valid_seek = true;
+                } else if (cmd->seek > 0) {
+                    // Even if format is unknown, seeking >0 on an empty stream is invalid
+                    target_offset = 1;
+                    valid_seek = true;
+                }
+
+                if (valid_seek) {
                     pthread_mutex_lock(&stream->data_lock);
                     if (target_offset > stream->data_written) {
                         pthread_mutex_unlock(&stream->data_lock);
@@ -1790,7 +1837,7 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
             }
 
             if (cmd->has_playback_state) {
-                if (cmd->playback_state == AUDIO_STATE_PLAYING) {
+                if (cmd->playback_state == 1 /* PLAYING */) {
                     for (size_t i = 0; i < self->audio_manager->stream_count; i++) {
                         AudioStream *other = &self->audio_manager->streams[i];
                         if (other->id != stream->id && other->state == AUDIO_STATE_PLAYING) {
@@ -1802,16 +1849,19 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                     } else if (stream->state == AUDIO_STATE_STOPPED) {
                         audio_output_start(stream);
                     }
-                } else if (cmd->playback_state == AUDIO_STATE_PAUSED) {
+                } else if (cmd->playback_state == 2 /* PAUSED */) {
                     if (stream->state == AUDIO_STATE_PLAYING) {
                         audio_output_pause(stream);
                     } else if (stream->state == AUDIO_STATE_STOPPED) {
                         stream->state = AUDIO_STATE_PAUSED;
                     }
-                } else if (cmd->playback_state == AUDIO_STATE_STOPPED) {
+                } else if (cmd->playback_state == 3 /* STOPPED */) {
                     if (stream->state == AUDIO_STATE_PLAYING || stream->state == AUDIO_STATE_PAUSED) {
                         audio_output_stop(stream);
                     }
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid playback state", cmd->quiet);
+                    break;
                 }
             }
             audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
@@ -1837,7 +1887,31 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
             break;
         }
         case 'q': {
-            if (cmd->id == 0) {
+            if (cmd->transmission_type == 't' || cmd->transmission_type == 'f' || cmd->transmission_type == 's') {
+                if (payload && cmd->payload_sz > 0) {
+                    char path[1024];
+                    size_t len = cmd->payload_sz < sizeof(path) - 1 ? cmd->payload_sz : sizeof(path) - 1;
+                    memcpy(path, payload, len);
+                    path[len] = '\0';
+                    AudioResponseCode rc = AUDIO_RESPONSE_EIO;
+                    if (cmd->transmission_type == 't') {
+                        rc = audio_transport_probe_temp_file(path);
+                    } else if (cmd->transmission_type == 'f') {
+                        rc = audio_transport_probe_file(path);
+                    } else if (cmd->transmission_type == 's') {
+                        rc = audio_transport_probe_sharedmem(path);
+                    }
+                    if (rc == AUDIO_RESPONSE_OK) {
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
+                    } else if (rc == AUDIO_RESPONSE_EINVAL) {
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid transport path", cmd->quiet);
+                    } else {
+                        audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EIO, "Failed to read transport", cmd->quiet);
+                    }
+                } else {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Missing path in payload", cmd->quiet);
+                }
+            } else if (cmd->id == 0) {
                 audio_send_capability_response(self, cmd->id, cmd->quiet);
             } else {
                 AudioStream *stream = audio_manager_get_stream(self->audio_manager, cmd->id);

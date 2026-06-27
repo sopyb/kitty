@@ -15,68 +15,67 @@ extern int shm_unlink(const char *name);
 #define O_NOFOLLOW 0
 #endif
 
-static int validate_temp_file_path(const char *path) {
-  if (!path || !*path)
-    return -1;
+static AudioResponseCode validate_temp_file_path(const char *path) {
+  if (!path || !*path || path[0] != '/')
+    return AUDIO_RESPONSE_EINVAL;
 
   char dirname_buf[4096], basename_buf[4096];
-  strncpy(dirname_buf, path, sizeof(dirname_buf) - 1);
-  dirname_buf[sizeof(dirname_buf) - 1] = '\0';
+  snprintf(dirname_buf, sizeof(dirname_buf), "%s", path);
 
   const char *dir = dirname(dirname_buf);
 
   if (strcmp(dir, "/tmp") != 0 && strcmp(dir, "/dev/shm") != 0) {
     const char *tmpdir = getenv("TMPDIR");
     if (!tmpdir || strcmp(dir, tmpdir) != 0) {
-      return -1;
+      return AUDIO_RESPONSE_EINVAL;
     }
   }
 
-  strncpy(basename_buf, path, sizeof(basename_buf) - 1);
-  basename_buf[sizeof(basename_buf) - 1] = '\0';
+  snprintf(basename_buf, sizeof(basename_buf), "%s", path);
   const char *name = basename(basename_buf);
 
   if (strncmp(name, "tty-audio-protocol-", 19) != 0) {
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
   }
 
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-static int validate_file_path(const char *path) {
-  if (!path || !*path)
-    return -1;
+static AudioResponseCode validate_file_path(const char *path) {
+  if (!path || !*path || path[0] != '/')
+    return AUDIO_RESPONSE_EINVAL;
   if (strncmp(path, "/proc", 5) == 0 || strncmp(path, "/sys", 4) == 0 ||
       strncmp(path, "/dev", 4) == 0) {
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
   }
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_read_temp_file(const char *path, uint32_t offset,
+AudioResponseCode audio_transport_read_temp_file(const char *path, uint32_t offset,
                                    uint32_t size, uint8_t **output,
                                    size_t *output_sz) {
   if (!path || !output || !output_sz)
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
 
-  if (validate_temp_file_path(path) != 0) {
-    return -1;
+  AudioResponseCode val_rc = validate_temp_file_path(path);
+  if (val_rc != AUDIO_RESPONSE_OK) {
+    return val_rc;
   }
 
   int fd = open(path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   struct stat st;
   if (fstat(fd, &st) != 0) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (!S_ISREG(st.st_mode)) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (size == 0) {
@@ -88,20 +87,20 @@ int audio_transport_read_temp_file(const char *path, uint32_t offset,
     *output_sz = 0;
     close(fd);
     unlink(path);
-    return 0;
+    return AUDIO_RESPONSE_OK;
   }
 
   *output = malloc(size);
   if (!*output) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (lseek(fd, offset, SEEK_SET) < 0) {
     free(*output);
     *output = NULL;
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   ssize_t n = read(fd, *output, size);
@@ -110,38 +109,39 @@ int audio_transport_read_temp_file(const char *path, uint32_t offset,
   if (n < 0) {
     free(*output);
     *output = NULL;
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   unlink(path);
 
   *output_sz = n;
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_read_file(const char *path, uint32_t offset, uint32_t size,
+AudioResponseCode audio_transport_read_file(const char *path, uint32_t offset, uint32_t size,
                               uint8_t **output, size_t *output_sz) {
   if (!path || !output || !output_sz)
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
 
-  if (validate_file_path(path) != 0) {
-    return -1;
+  AudioResponseCode val_rc = validate_file_path(path);
+  if (val_rc != AUDIO_RESPONSE_OK) {
+    return val_rc;
   }
 
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   struct stat st;
   if (fstat(fd, &st) != 0) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (!S_ISREG(st.st_mode)) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (size == 0) {
@@ -152,20 +152,20 @@ int audio_transport_read_file(const char *path, uint32_t offset, uint32_t size,
     *output = NULL;
     *output_sz = 0;
     close(fd);
-    return 0;
+    return AUDIO_RESPONSE_OK;
   }
 
   *output = malloc(size);
   if (!*output) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (lseek(fd, offset, SEEK_SET) < 0) {
     free(*output);
     *output = NULL;
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   ssize_t n = read(fd, *output, size);
@@ -174,28 +174,30 @@ int audio_transport_read_file(const char *path, uint32_t offset, uint32_t size,
   if (n < 0) {
     free(*output);
     *output = NULL;
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   *output_sz = n;
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_read_sharedmem(const char *name, uint32_t offset,
+AudioResponseCode audio_transport_read_sharedmem(const char *name, uint32_t offset,
                                    uint32_t size, uint8_t **output,
                                    size_t *output_sz) {
   if (!name || !output || !output_sz)
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
+  if (name[0] != '/')
+    return AUDIO_RESPONSE_EINVAL;
 
   int fd = shm_open(name, O_RDONLY, 0);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   struct stat st;
   if (fstat(fd, &st) != 0) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   if (size == 0) {
@@ -206,13 +208,13 @@ int audio_transport_read_sharedmem(const char *name, uint32_t offset,
     *output = NULL;
     *output_sz = 0;
     close(fd);
-    return 0;
+    return AUDIO_RESPONSE_OK;
   }
 
   *output = malloc(size);
   if (!*output) {
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   void *mapped = mmap(NULL, offset + size, PROT_READ, MAP_SHARED, fd, 0);
@@ -220,7 +222,7 @@ int audio_transport_read_sharedmem(const char *name, uint32_t offset,
     free(*output);
     *output = NULL;
     close(fd);
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
 
   memcpy(*output, (uint8_t *)mapped + offset, size);
@@ -228,62 +230,66 @@ int audio_transport_read_sharedmem(const char *name, uint32_t offset,
   close(fd);
 
   *output_sz = size;
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_probe_temp_file(const char *path) {
+AudioResponseCode audio_transport_probe_temp_file(const char *path) {
   if (!path)
-    return -1;
-  if (validate_temp_file_path(path) != 0) {
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
+  AudioResponseCode val_rc = validate_temp_file_path(path);
+  if (val_rc != AUDIO_RESPONSE_OK) {
+    return val_rc;
   }
   int fd = open(path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
   close(fd);
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_probe_file(const char *path) {
+AudioResponseCode audio_transport_probe_file(const char *path) {
   if (!path)
-    return -1;
-  if (validate_file_path(path) != 0) {
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
+  AudioResponseCode val_rc = validate_file_path(path);
+  if (val_rc != AUDIO_RESPONSE_OK) {
+    return val_rc;
   }
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
   close(fd);
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_probe_sharedmem(const char *name) {
+AudioResponseCode audio_transport_probe_sharedmem(const char *name) {
   if (!name)
-    return -1;
+    return AUDIO_RESPONSE_EINVAL;
+  if (name[0] != '/')
+    return AUDIO_RESPONSE_EINVAL;
   int fd = shm_open(name, O_RDONLY, 0);
   if (fd < 0) {
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   }
   close(fd);
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-static int load_transport_bytes(int (*reader)(const char *, uint32_t, uint32_t,
+static AudioResponseCode load_transport_bytes(AudioResponseCode (*reader)(const char *, uint32_t, uint32_t,
                                               uint8_t **, size_t *),
                                 const char *path_or_name, uint32_t offset,
                                 uint32_t size, AudioTransportResult *result) {
   if (!reader || !path_or_name || !result)
-    return -1;
+    return AUDIO_RESPONSE_EIO;
   result->data = NULL;
   result->size = 0;
   result->error = 0;
 
   uint8_t *data = NULL;
   size_t out_sz = 0;
-  int rc = reader(path_or_name, offset, size, &data, &out_sz);
-  if (rc != 0) {
+  AudioResponseCode rc = reader(path_or_name, offset, size, &data, &out_sz);
+  if (rc != AUDIO_RESPONSE_OK) {
     if (data)
       free(data);
     result->error = errno ? errno : EIO;
@@ -292,23 +298,23 @@ static int load_transport_bytes(int (*reader)(const char *, uint32_t, uint32_t,
 
   result->data = data;
   result->size = out_sz;
-  return 0;
+  return AUDIO_RESPONSE_OK;
 }
 
-int audio_transport_load_temp_file(const char *path, uint32_t offset,
+AudioResponseCode audio_transport_load_temp_file(const char *path, uint32_t offset,
                                    uint32_t size,
                                    AudioTransportResult *result) {
   return load_transport_bytes(audio_transport_read_temp_file, path, offset,
                               size, result);
 }
 
-int audio_transport_load_file(const char *path, uint32_t offset, uint32_t size,
+AudioResponseCode audio_transport_load_file(const char *path, uint32_t offset, uint32_t size,
                               AudioTransportResult *result) {
   return load_transport_bytes(audio_transport_read_file, path, offset, size,
                               result);
 }
 
-int audio_transport_load_sharedmem(const char *name, uint32_t offset,
+AudioResponseCode audio_transport_load_sharedmem(const char *name, uint32_t offset,
                                    uint32_t size,
                                    AudioTransportResult *result) {
   return load_transport_bytes(audio_transport_read_sharedmem, name, offset,
