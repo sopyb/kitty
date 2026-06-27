@@ -50,6 +50,7 @@ void audio_send_response(Screen *self, uint8_t action, uint32_t id,
   }
 }
 
+// TODO: Auto generate capability string
 void audio_send_capability_response(Screen *self, uint32_t id, uint8_t quiet) {
   if (!self || !self->callbacks)
     return;
@@ -58,7 +59,7 @@ void audio_send_capability_response(Screen *self, uint32_t id, uint8_t quiet) {
 
   char response[512];
   int len = snprintf(response, sizeof(response),
-                     "Aa=q,i=%u;OK;V=1,M=1,r=44100|48000,c=1|2,s=raw/s16le", id);
+                     "Aa=q,i=%u;OK;V=1,M=1,r=44100|48000,c=1|2,s=raw/s16le|raw/u8|raw/mulaw|raw/s24le|raw/s32le|raw/f32le|raw/f64le", id); 
 
   if (len > 0 && len < (int)sizeof(response)) {
     write_escape_code_to_child(self, ESC_APC, response);
