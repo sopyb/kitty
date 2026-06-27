@@ -1647,11 +1647,8 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
             if (cmd->rate) stream->rate = cmd->rate;
             if (cmd->channels) stream->channels = cmd->channels;
             if (cmd->format[0]) {
-                AudioFormat fmt;
-                if (audio_format_from_string(cmd->format, &fmt)) {
-                    stream->format = fmt;
-                } else {
-                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported format", cmd->quiet);
+                if (!audio_stream_set_format(stream, cmd->format)) {
+                    audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EUNSUPPORTED, "Unsupported format or container", cmd->quiet);
                     break;
                 }
             }

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <time.h>
+#include "audio_container.h"
 
 #define AUDIO_MAX_STREAMS 256
 #define AUDIO_STORAGE_QUOTA (330ULL * 1024 * 1024)
@@ -27,10 +28,13 @@ typedef enum {
 
 struct AudioBackend;
 
+
+
 typedef struct AudioStream {
   uint32_t id;
   uint32_t rate;
   uint8_t channels;
+  AudioContainer container;
   AudioFormat format;
   AudioPlaybackState state;
   uint32_t volume;
@@ -55,6 +59,8 @@ typedef struct AudioStream {
   pthread_cond_t data_ready;
   size_t playback_offset;
   bool flush_playback;
+  const AudioContainerHandler *container_handler;
+  void *container_data;
 } AudioStream;
 
 typedef struct {
@@ -73,7 +79,9 @@ void audio_manager_delete_stream(AudioManager *self, uint32_t id);
 void audio_manager_delete_all_streams(AudioManager *self);
 void audio_stream_append_data(AudioStream *self, const uint8_t *data,
                               size_t sz);
+void audio_stream_append_pcm(AudioStream *self, const uint8_t *data,
+                             size_t sz);
 void audio_stream_mark_complete(AudioStream *self);
 void audio_stream_free(AudioStream *self);
-bool audio_format_from_string(const char *format, AudioFormat *out);
+bool audio_stream_set_format(AudioStream *stream, const char *format_string);
 size_t audio_format_bytes_per_sample(AudioFormat format);

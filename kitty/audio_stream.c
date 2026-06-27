@@ -2,6 +2,8 @@
 #include "audio_output.h"
 #include <stdlib.h>
 #include <string.h>
+#include "audio_container.h"
+#include "audio_container_raw.h"
 
 AudioManager *audio_manager_new(void) {
   AudioManager *self = calloc(1, sizeof(AudioManager));
@@ -112,8 +114,8 @@ void audio_manager_delete_all_streams(AudioManager *self) {
   self->total_storage = 0;
 }
 
-void audio_stream_append_data(AudioStream *self, const uint8_t *data,
-                              size_t sz) {
+void audio_stream_append_pcm(AudioStream *self, const uint8_t *data,
+                             size_t sz) {
   if (!self || !data || sz == 0)
     return;
 
@@ -138,6 +140,12 @@ void audio_stream_append_data(AudioStream *self, const uint8_t *data,
   self->data_sz = self->data_written;
   pthread_cond_signal(&self->data_ready);
   pthread_mutex_unlock(&self->data_lock);
+}
+
+void audio_stream_append_data(AudioStream *self, const uint8_t *data, size_t sz) {
+  if (self && self->container_handler && self->container_handler->append_data) {
+    self->container_handler->append_data(self, data, sz);
+  }
 }
 
 void audio_stream_mark_complete(AudioStream *self) {
@@ -165,41 +173,47 @@ void audio_stream_free(AudioStream *self) {
   self->playback_failed = false;
   self->playback_paused = false;
   self->backend = NULL;
+  
+  if (self->container_handler && self->container_handler->free) {
+    self->container_handler->free(self);
+  }
+  self->container_handler = NULL;
+  self->container_data = NULL;
   pthread_cond_destroy(&self->data_ready);
   pthread_mutex_destroy(&self->data_lock);
 }
 
-bool audio_format_from_string(const char *format, AudioFormat *out) {
-  if (!format || !out || format[0] == '\0')
-    return false;
-  if (strcmp(format, "raw/s16le") == 0) {
-    *out = AUDIO_FORMAT_S16LE;
-    return true;
+const AudioContainerHandler* audio_container_get_handler(AudioContainer type) {
+  switch (type) {
+    case AUDIO_CONTAINER_RAW:
+      return &audio_container_raw_handler;
+    default:
+      return NULL;
   }
-  if (strcmp(format, "raw/u8") == 0) {
-    *out = AUDIO_FORMAT_U8;
-    return true;
+}
+
+bool audio_stream_set_format(AudioStream *stream, const char *format_string) {
+  if (!stream || !format_string || format_string[0] == '\0') return false;
+
+  const char *slash = strchr(format_string, '/');
+  if (!slash) return false;
+
+  size_t container_len = slash - format_string;
+  const char *format_spec = slash + 1;
+
+  AudioContainer type = AUDIO_CONTAINER_UNKNOWN;
+
+  if (container_len == 3 && strncmp(format_string, "raw", 3) == 0) {
+    type = AUDIO_CONTAINER_RAW;
   }
-  if (strcmp(format, "raw/mulaw") == 0) {
-    *out = AUDIO_FORMAT_MULAW;
-    return true;
+
+  stream->container = type;
+  stream->container_handler = audio_container_get_handler(type);
+
+  if (stream->container_handler && stream->container_handler->init) {
+    return stream->container_handler->init(stream, format_spec);
   }
-  if (strcmp(format, "raw/s24le") == 0) {
-    *out = AUDIO_FORMAT_S24LE;
-    return true;
-  }
-  if (strcmp(format, "raw/s32le") == 0) {
-    *out = AUDIO_FORMAT_S32LE;
-    return true;
-  }
-  if (strcmp(format, "raw/f32le") == 0) {
-    *out = AUDIO_FORMAT_F32LE;
-    return true;
-  }
-  if (strcmp(format, "raw/f64le") == 0) {
-    *out = AUDIO_FORMAT_F64LE;
-    return true;
-  }
+
   return false;
 }
 
