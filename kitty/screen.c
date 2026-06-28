@@ -1739,9 +1739,13 @@ void screen_handle_audio_command(Screen *self, const AudioCommand *cmd, const ui
                         rc = audio_transport_load_sharedmem(path, cmd->data_offset, cmd->data_sz, &tr);
                     }
 
-                    if (rc == AUDIO_RESPONSE_OK && tr.data) {
-                        audio_stream_append_data(stream, tr.data, tr.size);
-                        free(tr.data);
+                    if (rc == AUDIO_RESPONSE_OK) {
+                        if (tr.data && tr.size > 0) {
+                            audio_stream_append_data(stream, tr.data, tr.size);
+                        }
+                        if (tr.data) {
+                            free(tr.data);
+                        }
                         audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_OK, "OK", cmd->quiet);
                     } else if (rc == AUDIO_RESPONSE_EINVAL) {
                         audio_send_response(self, cmd->action, cmd->id, AUDIO_RESPONSE_EINVAL, "Invalid transport path", cmd->quiet);
