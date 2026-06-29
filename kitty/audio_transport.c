@@ -217,16 +217,26 @@ AudioResponseCode audio_transport_read_sharedmem(const char *name, uint32_t offs
     return AUDIO_RESPONSE_EIO;
   }
 
-  void *mapped = mmap(NULL, offset + size, PROT_READ, MAP_SHARED, fd, 0);
-  if (mapped == MAP_FAILED) {
-    free(*output);
-    *output = NULL;
-    close(fd);
-    return AUDIO_RESPONSE_EIO;
+  size_t done = 0;
+  while (done < size) {
+    ssize_t n = pread(fd, *output + done, size - done, (off_t)offset + (off_t)done);
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
+      free(*output);
+      *output = NULL;
+      close(fd);
+      return AUDIO_RESPONSE_EIO;
+    }
+    if (n == 0) {
+      free(*output);
+      *output = NULL;
+      close(fd);
+      return AUDIO_RESPONSE_EIO;
+    }
+    done += (size_t)n;
   }
 
-  memcpy(*output, (uint8_t *)mapped + offset, size);
-  munmap(mapped, offset + size);
   close(fd);
 
   *output_sz = size;
